@@ -174,9 +174,13 @@ static BLERemoteCharacteristic* authRemoteCharacteristic = nullptr;
 static BLERemoteCharacteristic* batteryCharacteristic = nullptr;
 static BLERemoteCharacteristic* deviceTempUnitsCharacteristic = nullptr;
 static BLERemoteCharacteristic* probe1TempCharacteristic = nullptr;
+static BLERemoteCharacteristic* probe1ThresholdCharacteristic = nullptr;
 static BLERemoteCharacteristic* probe2TempCharacteristic = nullptr;
+static BLERemoteCharacteristic* probe2ThresholdCharacteristic = nullptr;
 static BLERemoteCharacteristic* probe3TempCharacteristic = nullptr;
+static BLERemoteCharacteristic* probe3ThresholdCharacteristic = nullptr;
 static BLERemoteCharacteristic* probe4TempCharacteristic = nullptr;
+static BLERemoteCharacteristic* probe4ThresholdCharacteristic = nullptr;
 static BLERemoteCharacteristic* propanelevelCharacteristic = nullptr;
 
 static BLERemoteService* iGrillAuthService = nullptr; //iGrill BLE Service used for authenticating to the device (Needed to read probe values)
@@ -267,6 +271,96 @@ static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, ui
 
 }
 
+//Handle iGrill MQTT callback from Home Assistant
+void mqttCallback(char* topic, byte* payload, unsigned int length)
+{
+  // Setting threshold
+  IGRILLLOGGER(" - iGrill MQTT Callback", 1);
+  String topicStr = topic;
+  String payloadStr = "";
+  for (int i = 0; i < length; i++)
+  {
+    payloadStr += (char)payload[i];
+  }
+  // Convert payload to int
+  int payloadInt = payloadStr.toInt();
+
+  // Check if the user wants to turn off threshold
+  if (payloadInt == 0)
+  {
+    payloadInt = 63536; // This is the value when there is no threshold set
+    // This should result in 30f830f8 which is the value when there is no threshold set
+  }
+  
+  // Convert to uint8_t array (should be one or two bytes)
+  uint8_t data[4]; // Increased array size to accommodate 30 F8
+  data[0] = 0x30; // First byte: 30 in hexadecimal
+  data[1] = 0xF8; // Second byte: F8 in hexadecimal
+  data[2] = payloadInt & 0xFF;
+  data[3] = (payloadInt >> 8) & 0xFF;
+
+  // Convert to uint32_t
+  uint32_t value = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+
+  std::ostringstream oss;
+
+  oss << std::hex << value;
+
+  std::string hexString = oss.str();
+
+  IGRILLLOGGER(" - New threshold: " + String(hexString.c_str()), 1);
+
+  // Get the probe number from the topic
+  int probeNum = topicStr.substring(topicStr.lastIndexOf("probe_") + 6, topicStr.lastIndexOf("_threshold")).toInt();
+
+  // Write to the characteristic
+  if (probeNum == 1)
+  {
+    if (probe1ThresholdCharacteristic->canWrite())
+    {
+      probe1ThresholdCharacteristic->writeValue(data, 4, true);
+      // Writing twice because the app does it too
+      delay(1*1000);
+      probe1ThresholdCharacteristic->writeValue(data, 4, true);
+    }
+  }
+  else if (probeNum == 2)
+  {
+    if (probe2ThresholdCharacteristic->canWrite())
+    {
+      probe2ThresholdCharacteristic->writeValue(data, 4, true);
+      // Writing twice because the app does it too
+      delay(1*1000);
+      probe2ThresholdCharacteristic->writeValue(data, 4, true);
+    }
+  }
+  else if (probeNum == 3)
+  {
+    if (probe3ThresholdCharacteristic->canWrite())
+    {
+      probe3ThresholdCharacteristic->writeValue(data, 4, true);
+      // Writing twice because the app does it too
+      delay(1*1000);
+      probe3ThresholdCharacteristic->writeValue(data, 4, true);
+    }
+  }
+  else if (probeNum == 4)
+  {
+    if (probe4ThresholdCharacteristic->canWrite())
+    {
+      probe4ThresholdCharacteristic->writeValue(data, 4, true);
+      // Writing twice because the app does it too
+      delay(1*1000);
+      probe4ThresholdCharacteristic->writeValue(data, 4, true);
+    }
+  }
+
+  // Publish the new threshold
+  delay(1*1000);
+
+  refreshProbeThreshold(probeNum);
+}
+
 class MyClientCallback : public BLEClientCallbacks 
 {
   void onConnect(BLEClient* pclient) 
@@ -281,11 +375,15 @@ class MyClientCallback : public BLEClientCallbacks
     mqtt_client->publish(availTopic.c_str(),"offline");
 
     publishProbeTemp(1,-100);
+    publishProbeThreshold(1,-100);
     if((iGrillModel != "iGrill_mini") && (iGrillModel != "iGrill_mini_v2"))
     {
       publishProbeTemp(2,-100);
+      publishProbeThreshold(2,-100);
       publishProbeTemp(3,-100);
+      publishProbeThreshold(3,-100);
       publishProbeTemp(4,-100);
+      publishProbeThreshold(4,-100);
     }
 
     delay(100);
@@ -299,9 +397,13 @@ class MyClientCallback : public BLEClientCallbacks
     authRemoteCharacteristic = nullptr;
     batteryCharacteristic = nullptr;
     probe1TempCharacteristic = nullptr;
+    probe1ThresholdCharacteristic = nullptr;
     probe2TempCharacteristic = nullptr;
+    probe2ThresholdCharacteristic = nullptr;
     probe3TempCharacteristic = nullptr;
+    probe3ThresholdCharacteristic = nullptr;
     probe4TempCharacteristic = nullptr;
+    probe4ThresholdCharacteristic = nullptr;
     propanelevelCharacteristic = nullptr;
     deviceTempUnitsCharacteristic = nullptr;
     iGrillAuthService = nullptr;
@@ -375,6 +477,127 @@ void setDeviceTemperatureUnits()
     }  
 }
 
+//Refresh iGrill Probe Thresholds
+void refreshProbeThreshold(int probeNum)
+{
+  if (iGrillService == nullptr) 
+  {
+    IGRILLLOGGER(" - Refreshing Probe Threshold Failed!",1);
+    iGrillClient->disconnect();
+  }
+  else
+  {
+    try
+    {
+      if(probeNum == 1)
+      {
+        if(probe1ThresholdCharacteristic->canRead())
+        {
+          uint32_t value;
+          value = probe1ThresholdCharacteristic->readUInt32();
+          
+          // Convert the uint32_t to uint8_t array
+          uint8_t data[4];
+          uint8_t* vp = reinterpret_cast<uint8_t*>(&value);
+          data[0] = vp[0];
+          data[1] = vp[1];
+          data[2] = vp[2];
+          data[3] = vp[3];
+
+          uint16_t combined = (data[3] << 8) | data[2];
+          if (combined == 63536) // This is the value when there is no threshold set
+          {
+            IGRILLLOGGER("  -- Probe 1 Threshold: Not Set", 2);
+          } else {
+            IGRILLLOGGER("  -- Probe 1 Threshold: " + String(combined), 2);
+          }
+          publishProbeThreshold(1, combined);
+        }
+      }
+      if(probeNum == 2)
+      {
+        if(probe2ThresholdCharacteristic->canRead())
+        {
+          uint32_t value;
+          value = probe2ThresholdCharacteristic->readUInt32();
+          
+          // Convert the uint32_t to uint8_t array
+          uint8_t data[4];
+          uint8_t* vp = reinterpret_cast<uint8_t*>(&value);
+          data[0] = vp[0];
+          data[1] = vp[1];
+          data[2] = vp[2];
+          data[3] = vp[3];
+
+          uint16_t combined = (data[3] << 8) | data[2];
+          if (combined == 63536) // This is the value when there is no threshold set
+          {
+            IGRILLLOGGER("  -- Probe 2 Threshold: Not Set", 2);
+          } else {
+            IGRILLLOGGER("  -- Probe 2 Threshold: " + String(combined), 2);
+          }
+          publishProbeThreshold(2, combined);
+        }
+      }
+      if(probeNum == 3)
+      {
+        if(probe3ThresholdCharacteristic->canRead())
+        {
+          uint32_t value;
+          value = probe3ThresholdCharacteristic->readUInt32();
+          
+          // Convert the uint32_t to uint8_t array
+          uint8_t data[4];
+          uint8_t* vp = reinterpret_cast<uint8_t*>(&value);
+          data[0] = vp[0];
+          data[1] = vp[1];
+          data[2] = vp[2];
+          data[3] = vp[3];
+
+          uint16_t combined = (data[3] << 8) | data[2];
+          if (combined == 63536) // This is the value when there is no threshold set
+          {
+            IGRILLLOGGER("  -- Probe 3 Threshold: Not Set", 2);
+          } else {
+            IGRILLLOGGER("  -- Probe 3 Threshold: " + String(combined), 2);
+          }
+          publishProbeThreshold(3, combined);
+        }
+      }
+      if(probeNum == 4)
+      {
+        if(probe4ThresholdCharacteristic->canRead())
+        {
+          uint32_t value;
+          value = probe4ThresholdCharacteristic->readUInt32();
+          
+          // Convert the uint32_t to uint8_t array
+          uint8_t data[4];
+          uint8_t* vp = reinterpret_cast<uint8_t*>(&value);
+          data[0] = vp[0];
+          data[1] = vp[1];
+          data[2] = vp[2];
+          data[3] = vp[3];
+
+          uint16_t combined = (data[3] << 8) | data[2];
+          if (combined == 63536) // This is the value when there is no threshold set
+          {
+            IGRILLLOGGER("  -- Probe 4 Threshold: Not Set", 2);
+          } else {
+            IGRILLLOGGER("  -- Probe 4 Threshold: " + String(combined), 2);
+          }
+          publishProbeThreshold(4, combined);
+        }
+      }
+    }
+    catch(...)
+    {
+      IGRILLLOGGER(" - Refreshing Probe Threshold Failed!",1);
+      iGrillClient->disconnect();
+    }
+  }
+}
+
 //Register Callback for iGrill Probes
 void setupProbes()
 {
@@ -394,6 +617,8 @@ void setupProbes()
           probe1TempCharacteristic->registerForNotify(notifyCallback);
           IGRILLLOGGER("  -- Probe 1 Setup!",1);
         }
+        probe1ThresholdCharacteristic = iGrillService->getCharacteristic(PROBE1_THRESHOLD);
+        refreshProbeThreshold(1);
         if((iGrillModel != "iGrill_mini") && (iGrillModel != "iGrill_mini_v2"))
         {
           probe2TempCharacteristic = iGrillService->getCharacteristic(PROBE2_TEMPERATURE);
@@ -402,18 +627,24 @@ void setupProbes()
             probe2TempCharacteristic->registerForNotify(notifyCallback);
             IGRILLLOGGER("  -- Probe 2 Setup!",1);
           }
+          probe2ThresholdCharacteristic = iGrillService->getCharacteristic(PROBE2_THRESHOLD);
+          refreshProbeThreshold(2);
           probe3TempCharacteristic = iGrillService->getCharacteristic(PROBE3_TEMPERATURE);
           if(probe3TempCharacteristic->canNotify())
           {
             probe3TempCharacteristic->registerForNotify(notifyCallback);
             IGRILLLOGGER("  -- Probe 3 Setup!",1);
           }
+          probe3ThresholdCharacteristic = iGrillService->getCharacteristic(PROBE3_THRESHOLD);
+          refreshProbeThreshold(3);
           probe4TempCharacteristic = iGrillService->getCharacteristic(PROBE4_TEMPERATURE);
           if(probe4TempCharacteristic->canNotify())
           {
             probe4TempCharacteristic->registerForNotify(notifyCallback);
             IGRILLLOGGER("  -- Probe 4 Setup!",1);
           }
+          probe4ThresholdCharacteristic = iGrillService->getCharacteristic(PROBE4_THRESHOLD);
+          refreshProbeThreshold(4);
         }
       }
       catch(...)
@@ -1054,6 +1285,7 @@ void connectMQTT()
       mqtt_client->setKeepAlive(60); //Added to Stabilize MQTT Connection
       mqtt_client->setSocketTimeout(60); //Added to Stabilize MQTT Connection
       mqtt_client->setServer(custom_MQTT_SERVER, atoi(custom_MQTT_SERVERPORT));
+      mqtt_client->setCallback(mqttCallback);
     }
   
     if (!mqtt_client->connect(String(ESP_getChipId(), HEX).c_str(), custom_MQTT_USERNAME, custom_MQTT_PASSWORD, lastWillTopic.c_str(), 1, true, "offline"))
@@ -1198,6 +1430,77 @@ void publishProbeTemp(int probeNum, int temp)
           mqtt_client->publish(configTopic.c_str(),probePayload.c_str());
         }
       }
+    }
+  }
+  else
+  {
+    connectMQTT();
+  }
+}
+
+// Publish iGrill Temp Probe Threshold to MQTT
+void publishProbeThreshold(int probeNum, int temp)
+{
+  if(mqtt_client)
+  {
+    if(mqtt_client->connected())
+    {
+      String topic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+ String(probeNum)+"_threshold";
+      String configTopic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+ String(probeNum)+"_threshold/config";
+      String commandTopic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+String(probeNum)+"_threshold_command";
+      
+      StaticJsonDocument<512> deviceObj;
+      deserializeJson(deviceObj, deviceStr);
+      String probeThresholdPayload = "";
+      DynamicJsonDocument probeThresholdJSON(1024);
+      probeThresholdJSON["device"] = deviceObj;
+      probeThresholdJSON["name"] = "Probe "+String(probeNum)+" Threshold";
+      probeThresholdJSON["device_class"] = "temperature";
+      probeThresholdJSON["unique_id"]   = "igrill_"+iGrillMac+"_probe"+String(probeNum)+"_threshold";
+      probeThresholdJSON["state_topic"] = topic;
+      probeThresholdJSON["command_topic"] = commandTopic;
+      probeThresholdJSON["max"] = 400;
+      probeThresholdJSON["min"] = 0;
+      probeThresholdJSON["step"] = 1;
+      probeThresholdJSON["icon"] = "mdi:thermometer-chevron-up";
+      if(USE_METRIC_DEGREES)
+        probeThresholdJSON["unit_of_measurement"] = "°C";
+      else
+        probeThresholdJSON["unit_of_measurement"] = "°F";
+      serializeJson(probeThresholdJSON,probeThresholdPayload);
+
+      if (temp == 63536)
+      {
+        // Threshold is not set
+        mqtt_client->publish(topic.c_str(),"None");
+        // Since the callback is set in setup, we don't need to include it here.
+        // It will be called automatically by the underlying client
+        if (mqtt_client->subscribe(commandTopic.c_str()))
+        {
+          IGRILLLOGGER("  -- Subscribed to " + commandTopic, 1);
+        } else {
+          IGRILLLOGGER("  -- Failed to subscribe to " + commandTopic, 1);
+        }
+      } else if (temp == -100) {
+        // iGrill is disconnected
+        mqtt_client->publish(topic.c_str(), "None", true);
+        mqtt_client->publish(configTopic.c_str(), 0, true);
+
+        // Unsubscribe from the command topic
+        mqtt_client->unsubscribe(commandTopic.c_str());
+        IGRILLLOGGER("  -- Unsubscribed from " + commandTopic, 1);
+      } else {
+        mqtt_client->publish(topic.c_str(),String(temp).c_str());
+        // Since the callback is set in setup, we don't need to include it here.
+        // It will be called automatically by the underlying client
+        if (mqtt_client->subscribe(commandTopic.c_str()))
+        {
+          IGRILLLOGGER("  -- Subscribed to " + commandTopic, 1);
+        } else {
+          IGRILLLOGGER("  -- Failed to subscribe to " + commandTopic, 1);
+        }
+      }
+      mqtt_client->publish(configTopic.c_str(),probeThresholdPayload.c_str());
     }
   }
   else
@@ -1606,6 +1909,8 @@ void loop()
   // You can also call drd.stop() when you wish to no longer consider the next reset as a double reset.
   if (drd)
     drd->loop();
+  if (mqtt_client)
+    mqtt_client->loop();
   // this is just for checking if we are connected to WiFi
   // If the flag "doConnect" is true then we have scanned for and found the iGrill Device
   if (doConnect == true) 
