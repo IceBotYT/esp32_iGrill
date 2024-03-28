@@ -299,17 +299,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
   data[2] = payloadInt & 0xFF;
   data[3] = (payloadInt >> 8) & 0xFF;
 
-  // Convert to uint32_t
-  uint32_t value = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
-
-  std::ostringstream oss;
-
-  oss << std::hex << value;
-
-  std::string hexString = oss.str();
-
-  IGRILLLOGGER(" - New threshold: " + String(hexString.c_str()), 1);
-
   // Get the probe number from the topic
   int probeNum = topicStr.substring(topicStr.lastIndexOf("probe_") + 6, topicStr.lastIndexOf("_threshold")).toInt();
 
@@ -1447,7 +1436,7 @@ void publishProbeThreshold(int probeNum, int temp)
     {
       String topic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+ String(probeNum)+"_threshold";
       String configTopic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+ String(probeNum)+"_threshold/config";
-      String commandTopic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+String(probeNum)+"_threshold_command";
+      String commandTopic = (String)custom_MQTT_BASETOPIC + "/number/igrill_"+ iGrillMac+"/probe_"+String(probeNum)+"_threshold/command";
       
       StaticJsonDocument<512> deviceObj;
       deserializeJson(deviceObj, deviceStr);
@@ -1484,6 +1473,7 @@ void publishProbeThreshold(int probeNum, int temp)
       } else if (temp == -100) {
         // iGrill is disconnected
         mqtt_client->publish(topic.c_str(), "None", true);
+        String configTopic = (String)custom_MQTT_BASETOPIC + "/sensor/igrill_"+ iGrillMac+"/probe_"+ String(probeNum)+"_threshold/config";
         mqtt_client->publish(configTopic.c_str(), 0, true);
 
         // Unsubscribe from the command topic
